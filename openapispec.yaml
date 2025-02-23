@@ -1,0 +1,114 @@
+openapi: 3.0.3
+info:
+  title: Sample API
+  description: API specification with three endpoints under `/spec`
+  version: 1.0.0
+
+paths:
+  /spec:
+    get:
+      summary: Get a list of items
+      operationId: getSpec
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+    post:
+      summary: Create a new item
+      operationId: createSpec
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewItem'
+      responses:
+        '201':
+          description: Item created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+    delete:
+      summary: Delete an item by ID
+      operationId: deleteSpec
+      parameters:
+        - $ref: '#/components/parameters/ItemIdParam'
+      responses:
+        '204':
+          description: Item deleted successfully
+      x-amazon-apigateway-integration:
+        type: AWS
+        httpMethod: POST
+        uri: arn:aws:lambda:us-east-2:123456789012:function:HelloWorld
+        payloadFormatVersion: "1.0"
+  /example:
+    post:
+      summary: Create a new item
+      operationId: createSpec
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewItem'
+  /example2:
+    delete:
+      summary: Delete an item by ID
+      operationId: deleteSpec
+      parameters:
+        - $ref: '#/components/parameters/ItemIdParam'
+      responses:
+        '204':
+          description: Item deleted successfully
+      x-amazon-apigateway-integration:
+        type: AWS
+        httpMethod: POST
+        uri: arn:aws:lambda:us-east-2:123456789012:function:HelloWorld
+        payloadFormatVersion: "1.0"
+
+
+components:
+  parameters:
+    LimitParam:
+      name: limit
+      in: query
+      description: Maximum number of items to return
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+    ItemIdParam:
+      name: id
+      in: query
+      description: ID of the item to delete
+      required: true
+      schema:
+        type: integer
+  schemas:
+    Item:
+      properties:
+        objectTest:
+          schema:
+            $ref: '#/components/schemas/uuid'
+    NewItem:
+      type: object
+      required:
+        - name
+      properties:
+        $ref: '#/components/schemas/uid'
+    uid:
+      type: string
+      schema:
+        $ref: '#/components/schemas/uuuid'
+    uuid:
+      type: integer
+    uuuid:
+      type: integer
