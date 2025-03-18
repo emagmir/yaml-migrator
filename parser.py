@@ -1,139 +1,112 @@
 import yaml
+import re
+import sys
+import os
 
-def load_openapi_spec(file_path):
-    with open(file_path, 'r') as file:
-        return yaml.safe_load(file)
+# Validate command-line arguments
+if len(sys.argv) != 3:
+    print("Usage: python script.py <endpoints.txt> <openapispec.yaml>")
+    sys.exit(1)
 
-def extract_spec_path(spec, target_paths):
-    paths = spec.get("paths", {})
-    return {path: paths.get(path, {}) for path in target_paths if path in paths}
+# Command-line arguments
+endpoints_file = sys.argv[1]
+yaml_file = sys.argv[2]
 
-def find_ref(spec, ref_path):
-    parts = ref_path.lstrip("#/").split("/")
-    ref_data = spec
-    for part in parts:
-        ref_data = ref_data.get(part, {})
-    return ref_data
+# Output file: replace .txt with .yaml
+output_file = os.path.splitext(endpoints_file)[0] + ".yaml"
 
-def extract_referenced_components(spec, spec_paths, processed_refs=None):
-    if processed_refs is None:
-        processed_refs = set()
-    
-    referenced_params = {}
-    referenced_schemas = {}
-    
-    def process_reference(ref_path):
-        ref_key = ref_path.split("/")[-1]
-        if ref_key in processed_refs:
-            return None
-        processed_refs.add(ref_key)
-        return find_ref(spec, ref_path)
-    
-    def extract_from_dict(details):
-        if isinstance(details, dict):
-            for key, value in details.items():
-                if isinstance(value, dict):
-                    if "$ref" in value:
-                        ref_key = value["$ref"].split("/")[-1]
-                        ref_value = process_reference(value["$ref"])
-                        if ref_value:
-                            if "parameters" in value["$ref"]:
-                                referenced_params[ref_key] = ref_value
-                            elif "schemas" in value["$ref"]:
-                                referenced_schemas[ref_key] = ref_value
-                                extract_from_dict(ref_value)  # Recursively extract nested references
-                    extract_from_dict(value)  # Recursively check all nested structures
-                elif isinstance(value, list):
-                    for item in value:
-                        extract_from_dict(item)
-    
-    for methods in spec_paths.values():
-        for details in methods.values():
-            if isinstance(details, dict):
-                if "parameters" in details:
-                    for param in details["parameters"]:
-                        if "$ref" in param:
-                            ref_key = param["$ref"].split("/")[-1]
-                            ref_value = process_reference(param["$ref"])
-                            if ref_value:
-                                referenced_params[ref_key] = ref_value
-                extract_from_dict(details)
-                
-                # Also check requestBody for schema references
-                if "requestBody" in details and "content" in details["requestBody"]:
-                    for content_type, content_value in details["requestBody"]["content"].items():
-                        if "schema" in content_value:
-                            extract_from_dict(content_value["schema"])
-                
-                # Also check responses for schema references
-                if "responses" in details:
-                    for response in details["responses"].values():
-                        if "content" in response:
-                            for content_type, content_value in response["content"].items():
-                                if "schema" in content_value:
-                                    extract_from_dict(content_value["schema"])
-    
-    return referenced_params, referenced_schemas
+# Regular expression to match references: #/components/{value1}/{schemaOrParamName}
+ref_pattern = re.compile(r"^#/components/(?P<value1>\w+)/(?P<schemaOrParamName>[\w-]+)$")
 
-def print_combined_spec(spec, endpoints):
-    spec_paths = extract_spec_path(spec, endpoints)
-    
-    if not spec_paths:
-        print("No specified paths found in the OpenAPI specification.")
-        return
-    
-    referenced_params, referenced_schemas = extract_referenced_components(spec, spec_paths)
-    
-    output = {"paths": spec_paths}
-    if referenced_params or referenced_schemas:
-        components = {}
-        if referenced_params:
-            components["parameters"] = referenced_params
-        if referenced_schemas:
-            components["schemas"] = referenced_schemas
-        output["components"] = components
-    
-    print(yaml.dump(output, default_flow_style=False))
+# Read and parse the YAML file
+try:
+    with open(yaml_file, "r") as file:
+        data = yaml.safe_load(file)
 
-def read_endpoints(file_path):
-    with open(file_path, 'r') as file:
-        return [line.strip() for line in file if line.strip()]
+    # Extract the 'paths' key
+    paths = data.get("paths", {})
 
-if __name__ == "__main__":
-    spec_file_path = "openapispec.yaml"  # Update this path if necessary
-    endpoints_file_path = "endpoints.txt"  # File containing endpoints
-    
-    spec = load_openapi_spec(spec_file_path)
-    endpoints = read_endpoints(endpoints_file_path)
-    
-    print_combined_spec(spec, endpoints)
+    # Read the list of endpoints from the file
+    try:
+        with open(endpoints_file, "r") as file:
+            endpoint_paths = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        print(f"Error: File '{endpoints_file}' not found.")
+        sys.exit(1)
 
+    # Store extracted path definitions and components
+    extracted_paths = {}
+    extracted_components = {}
 
+    # Function to recursively search for `$ref` occurrences
+    def find_references(obj, refs=None):
+        if refs is None:
+            refs = set()
+        
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key == "$ref" and isinstance(value, str):
+                    match = ref_pattern.match(value)
+                    if match:
+                        ref_tuple = (match.group("value1"), match.group("schemaOrParamName"))
+                        if ref_tuple not in refs:
+                            refs.add(ref_tuple)
+                else:
+                    find_references(value, refs)
+        elif isinstance(obj, list):
+            for item in obj:
+                find_references(item, refs)
+        return refs
 
+    def extract_component(value1, schema_or_param):
+        """Extract a referenced component and search inside it for more references."""
+        if value1 not in data.get("components", {}):
+            return  # Skip if the component category does not exist
+        
+        component_dict = data["components"][value1]
+        
+        if schema_or_param in component_dict:
+            # Add the schema/parameter to extracted components
+            if value1 not in extracted_components:
+                extracted_components[value1] = {}
+            extracted_components[value1][schema_or_param] = component_dict[schema_or_param]
 
+            # Recursively search inside the extracted schema
+            new_refs = find_references(component_dict[schema_or_param])
+            for new_value1, new_schema_or_param in new_refs:
+                if new_schema_or_param not in extracted_components.get(new_value1, {}):
+                    extract_component(new_value1, new_schema_or_param)
 
+    # Process each path from the file
+    for target_path in endpoint_paths:
+        if target_path not in paths:
+            print(f"Warning: Path '{target_path}' not found in the YAML file.")
+            continue
 
+        # Store the full path definition
+        extracted_paths[target_path] = paths[target_path]
 
+        # Extract references
+        references = find_references(paths[target_path])
 
+        for value1, schema_or_param in references:
+            extract_component(value1, schema_or_param)
 
+    # Prepare output data
+    output_data = {
+        "paths": extracted_paths,
+        "components": extracted_components
+    }
 
+    # Write output to a file
+    with open(output_file, "w") as file:
+        yaml.dump(output_data, file, default_flow_style=False, sort_keys=False)
 
+    print(f"Extraction complete. Output saved to '{output_file}'.")
 
-
-# from openapi_parser import parse
-
-# specification = parse('openapispec.yaml')
-
-# for path in specification.paths:
-#     supported_methods = ','.join([x.method.value for x in path.operations])
-
-#     print(f"Operation: {path.url}, methods: {supported_methods}")
-
-# for param in specification.parameters:
-
-#     print(f"Parameter: {param.url}")
-
-# # Output
-# #
-# # >> Operation: /users, methods: get,post
-# # >> Operation: /users/{uuid}, methods: get,put
+except FileNotFoundError:
+    print(f"Error: File '{yaml_file}' not found.")
+    sys.exit(1)
+except yaml.YAMLError as e:
+    print(f"Error parsing YAML: {e}")
+    sys.exit(1)
